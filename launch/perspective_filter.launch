@@ -1,0 +1,6 @@
+<launch>
+
+<node pkg="perspective_filter" type="perspective_filter_node.py" name="perspective_filter"
+    args="base" output="screen"/>
+
+</launch>

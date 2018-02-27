@@ -1,0 +1,4 @@
+#
+string agent_name
+---
+bool success
