@@ -7,6 +7,7 @@ import rospy
 import sys
 from underworlds import *
 from underworlds.helpers.geometry import _get_parent_chain
+from std_msgs.msg import String
 from perspective_filter.msg import Perspective, PerspectiveArray
 from perspective_filter.srv import AddAgent, RemoveAgent
 from underworlds.tools.visibility import VisibilityMonitor
@@ -56,7 +57,8 @@ class PerspectiveFilter(object):
 
         # The ROS publishers
         self.ros_publishers = {
-            "perspectives": rospy.Publisher("perspective_filter/agent_perspectives", PerspectiveArray, queue_size=10)}
+            "perspectives": rospy.Publisher("perspective_filter/agent_perspectives", PerspectiveArray, queue_size=10),
+            "situation_log": rospy.Publisher("perspective_filter/log", String, queue_size=5)}
         # The ROS services
         self.ros_services = {
             "add_agent": rospy.Service("perspective_filter/add_agent", AddAgent, self.handle_add_agent),
@@ -75,7 +77,6 @@ class PerspectiveFilter(object):
     def handle_add_agent(self, req):
         for node in self.source.scene.nodes:
             if node.name == req.agent_name and node.type == CAMERA:
-                self.visibilities_enabled_ids.append(node.id)
                 if req.tom_lvl >= 1:
                     self.tom_enabled_ids.append(node.id)
                 return True
@@ -100,72 +101,90 @@ class PerspectiveFilter(object):
 
         self.cameras = self.get_all_cameras()
 
-        if self.visibilities_enabled_ids:
-            for agent_id in self.cameras.keys():
-                if agent_id in self.tom_enabled_ids:
-                    nodes_to_update[agent_id] = []
-                    new_nodes_to_update[agent_id] = []
-                    if agent_id not in self.beliefs:
-                        self.beliefs[agent_id] = self.ctx.worlds[agent_id]
-                        self.node_mapping[agent_id] = {}
+        for agent_id in self.cameras.keys():
+            #if agent_id in self.tom_enabled_ids:
+            nodes_to_update[agent_id] = []
+            new_nodes_to_update[agent_id] = []
+            if agent_id not in self.beliefs:
+                self.beliefs[agent_id] = self.ctx.worlds[self.cameras[agent_id].name+"_beliefs"]
+                self.node_mapping[agent_id] = {}
 
-            dq = deque()
-            dq.append(self.source.scene.rootnode)
+        dq = deque()
+        dq.append(self.source.scene.rootnode)
 
-            while not rospy.is_shutdown() and 0 < len(dq):
-                node = dq.pop()
-                if node.id != self.source.scene.rootnode.id:
-                    # Process start here
+        while not rospy.is_shutdown() and 0 < len(dq):
+            node = dq.pop()
+            if node.id != self.source.scene.rootnode.id:
+                # Process start here
 
-                    if node.id in self.cameras.keys():  # if the node is the agent POV
-                        nodes_to_update[node.id].append(node)  # we add it to his belief
+                if node.id in self.cameras.keys():  # if the node is the agent POV
+                    nodes_to_update[node.id].append(node)  # we add it to his belief
 
-                    if node.parent in self.cameras.keys():  # if the node is part of an agent
-                        nodes_to_update[node.parent].append(node)  # we add it to his belief
+                if node.parent in self.cameras.keys():  # if the node is part of an agent
+                    nodes_to_update[node.parent].append(node)  # we add it to his belief
 
-                    for agent_id, visible_nodes in self.visible_nodes.items():  # then we add the visible nodes
+                for agent_id, visible_nodes in self.visible_nodes.items():  # then we add the visible nodes
+                    if agent_id in self.cameras.keys():
                         if node in visible_nodes:
                             nodes_to_update[agent_id].append(node)
 
-                # And end here
-                for child_id in node.children:
-                    dq.append(self.source.scene.nodes[child_id])
+            # And end here
+            for child_id in node.children:
+                dq.append(self.source.scene.nodes[child_id])
 
-            for agent_id, nodes in nodes_to_update.items():
-                if nodes:
-                    for node in nodes:
-                        new_node = node.copy()
-
-                        if node.id in self.node_mapping[agent_id]:
-                            new_node.id = self.node_mapping[agent_id][node.id]
-                            if new_node.id in self.nodes_transform:
-                                if not numpy.allclose(self.nodes_transform[new_node.id], new_node.transformation):
-                                    new_nodes_to_update[agent_id].append(new_node)
-                        else:
-                            self.node_mapping[agent_id][node.id] = new_node.id
-                            new_nodes_to_update[agent_id].append(new_node)
-
-            # Finally we update the corresponding beliefs worlds
-            for agent_id, nodes in new_nodes_to_update.items():
+        for agent_id, nodes in nodes_to_update.items():
+            if nodes:
                 for node in nodes:
-                    node.parent = self.node_mapping[agent_id][node.parent] if node.parent in self.node_mapping[agent_id] \
-                        else self.beliefs[agent_id].scene.rootnode.id
-                    self.nodes_transform[new_node.id] = new_node.transformation
-                if nodes:
-                    rospy.logwarn(nodes)
-                    self.beliefs[agent_id].scene.nodes.update(nodes)
+                    new_node = node.copy()
+                    if node.id in self.node_mapping[agent_id]:
+                        new_node.id = self.node_mapping[agent_id][node.id]
+                        if new_node.id in self.nodes_transform:
+                            if not numpy.allclose(self.nodes_transform[new_node.id], new_node.transformation):
+                                new_nodes_to_update[agent_id].append(new_node)
+                    else:
+                        self.node_mapping[agent_id][node.id] = new_node.id
+                        new_nodes_to_update[agent_id].append(new_node)
 
-    def start_see_situation(self, world, subject, object):
-        world.timeline.start(Situation(desc="see("+subject.name+","+object.name))
+        # Finally we update the corresponding beliefs worlds
+        for agent_id, nodes in new_nodes_to_update.items():
+            for node in nodes:
+                node.parent = self.node_mapping[agent_id][node.parent] if node.parent in self.node_mapping[agent_id] \
+                    else self.beliefs[agent_id].scene.rootnode.id
+                self.nodes_transform[new_node.id] = new_node.transformation
+            if nodes:
+                self.beliefs[agent_id].scene.nodes.update(nodes)
 
-    def start_visible_situation(self, world, subject, object):
-        world.timeline.start(Situation(desc="visible("+subject.name+","+object.name))
+    def start_visible_situation(self, subject_name, object_name):
+        description = "visible(" + subject_name + "," + object_name + ")"
+        sit = Situation(desc=description)
+        self.relations_map[description] = sit.id
+        self.ros_publishers["situation_log"].publish("START "+description)
+        try:
+            self.source.timeline.update(sit)
+        except Exception as e:
+            rospy.logwarn("[robot_monitor] Exception occurred : " + str(e))
+        return sit.id
 
-    def end_situation(self, world, situation_id):
-        world.timeline.end(world.timeline.situations[situation_id])
+    def start_see_situation(self, subject_name, object_name):
+        description = "see(" + subject_name + "," + object_name + ")"
+        sit = Situation(desc=description)
+        self.relations_map[description] = sit.id
+        self.ros_publishers["situation_log"].publish("START "+description)
+        try:
+            self.source.timeline.update(sit)
+        except Exception as e:
+            rospy.logwarn("[robot_monitor] Exception occurred : " + str(e))
+        return sit.id
+
+    def end_situation(self, description):
+        sit_id = self.relations_map[description]
+        self.ros_publishers["situation_log"].publish("END "+description)
+        try:
+            self.source.timeline.end(self.source.timeline[sit_id])
+        except Exception as e:
+            rospy.logwarn("[robot_monitor] Exception occurred : "+str(e))
 
     def publish_perspectives(self):
-
         objects_seen = {}
         agents_seen = {}
         for agent_name, visible_nodes in self.visible_nodes.items():
@@ -175,11 +194,11 @@ class PerspectiveFilter(object):
                 objects_seen[agent_name].append(node.name)
 
         perspectives = PerspectiveArray()
-        for key, objects in objects_seen.items():
+        for name, objects in objects_seen.items():
             perspective = Perspective()
-            perspective.agent_id = key
+            perspective.agent_name = name
             perspective.objects_seen = objects
-            perspective.agents_seen = agents_seen[key]
+            perspective.agents_seen = agents_seen[name]
             perspectives.perspectives.append(perspective)
 
         self.ros_publishers["perspectives"].publish(perspectives)
@@ -193,18 +212,15 @@ class PerspectiveFilter(object):
 
         previously_visible_nodes = {}
         visible_nodes = {}
-        for camera_name, camera_id in self.cameras.items():
+        for camera_name, camera in self.cameras.items():
             try:
                 if self.visible_nodes:
-                    previously_visible_nodes[camera_id] = self.visible_nodes[camera_id]
+                    previously_visible_nodes[camera.id] = self.visible_nodes[camera.id]
                 if self.visibility_monitor is None:
                     self.visibility_monitor = VisibilityMonitor(self.ctx, self.source)
-                    rospy.loginfo("[perspective_filter] Visibility monitor now running...")
-                    rospy.loginfo(
-                        "[perspective_filter] Please activate the Pygame window to enable visibilities computation !")
+                    rospy.loginfo("[perspective_filter] Please activate the Pygame window to compute visibilities!")
 
-                if camera_id in self.visibilities_enabled_ids:
-                    visible_nodes[camera_id] = self.visibility_monitor.from_camera(camera_name)
+                visible_nodes[camera.id] = self.visibility_monitor.from_camera(camera.name)
             except Exception:
                 pass
         self.visible_nodes = visible_nodes
@@ -214,30 +230,28 @@ class PerspectiveFilter(object):
             for node in nodes_seen:
                 if agent_id in previously_visible_nodes:
                     if node not in previously_visible_nodes[agent_id]:
-                        sit_id = self.start_see_situation(self.source, agent, node).id
-                        self.relations_map["see("+agent.id+","+node.id+")"] = sit_id
-                        sit_id = self.start_visible_situation(self.source, node, agent).id
-                        self.relations_map["visible("+node.id+","+agent.id+")"] = sit_id
+                        #self.start_see_situation(agent.name, node.name)
+                        self.start_visible_situation(node.name, agent.name)
 
         for agent_id, nodes_previously_seen in previously_visible_nodes.items():
             agent = self.source.scene.nodes[agent_id]
             for node in nodes_previously_seen:
                 if node not in self.visible_nodes[agent_id]:
-                    sit_id = self.relations_map["see("+agent.id+","+node.id+")"]
-                    self.end_situation(self.source, sit_id)
-                    sit_id = self.relations_map["visible("+node.id+","+agent.id+")"]
-                    self.end_situation(self.source, sit_id)
+                    #self.end_situation("see("+agent.name+","+node.name+")")
+                    self.end_situation("visible("+node.name+","+agent.name+")")
 
     def run(self):
         """
         Run the perspective filter
         :return:
         """
+        rate = rospy.Rate(30)
         while not rospy.is_shutdown():
             try:
                 self.compute_relations()
-                self.publish_perspectives()
+                #self.publish_perspectives()
                 self.filter()
+                rate.sleep()
             except KeyboardInterrupt:
                 break
 
