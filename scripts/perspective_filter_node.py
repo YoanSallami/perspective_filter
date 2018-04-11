@@ -46,7 +46,7 @@ class PerspectiveFilter(object):
 
         self.visible_nodes = {}
 
-        self.relations_map = {}
+        self.current_situations_map = {}
 
         self.visibility_monitor = None
 
@@ -57,12 +57,13 @@ class PerspectiveFilter(object):
 
         # The ROS publishers
         self.ros_publishers = {
-            "perspectives": rospy.Publisher("perspective_filter/agent_perspectives", PerspectiveArray, queue_size=10),
-            "situation_log": rospy.Publisher("perspective_filter/log", String, queue_size=5)}
+            "perspectives": rospy.Publisher("perspective_filter/agent_perspectives", PerspectiveArray, queue_size=10)}
         # The ROS services
         self.ros_services = {
             "add_agent": rospy.Service("perspective_filter/add_agent", AddAgent, self.handle_add_agent),
             "remove_agent": rospy.Service("perspective_filter/remove_agent", RemoveAgent, self.handle_remove_agent)}
+
+        self.log_pub = {"situation_log": rospy.Publisher("perspective_filter/log", String, queue_size=5)}
 
     def get_all_cameras(self):
         cameras = {}
@@ -154,35 +155,26 @@ class PerspectiveFilter(object):
             if nodes:
                 self.beliefs[agent_id].scene.nodes.update(nodes)
 
-    def start_visible_situation(self, subject_name, object_name):
-        description = "visible(" + subject_name + "," + object_name + ")"
+    def start_n2_situation(self, timeline, predicate, subject_name, object_name, isevent=False):
+        description = predicate + "(" + subject_name + "," + object_name + ")"
         sit = Situation(desc=description)
-        self.relations_map[description] = sit.id
-        self.ros_publishers["situation_log"].publish("START "+description)
-        try:
-            self.source.timeline.update(sit)
-        except Exception as e:
-            rospy.logwarn("[robot_monitor] Exception occurred : " + str(e))
+        sit.starttime = time.time()
+        if isevent:
+            sit.endtime = sit.starttime
+        self.current_situations_map[description] = sit
+        self.log_pub["situation_log"].publish("START " + description)
+        timeline.update(sit)
         return sit.id
 
-    def start_see_situation(self, subject_name, object_name):
-        description = "see(" + subject_name + "," + object_name + ")"
-        sit = Situation(desc=description)
-        self.relations_map[description] = sit.id
-        self.ros_publishers["situation_log"].publish("START "+description)
+    def end_n2_situation(self, timeline, predicate, subject_name, object_name):
+        description = predicate + "(" + subject_name + "," + object_name + ")"
         try:
-            self.source.timeline.update(sit)
+            sit = self.current_situations_map[description]
+            self.log_pub["situation_log"].publish("END " + description)
+            timeline.end(sit)
         except Exception as e:
-            rospy.logwarn("[robot_monitor] Exception occurred : " + str(e))
-        return sit.id
-
-    def end_situation(self, description):
-        sit_id = self.relations_map[description]
-        self.ros_publishers["situation_log"].publish("END "+description)
-        try:
-            self.source.timeline.end(self.source.timeline[sit_id])
-        except Exception as e:
-            rospy.logwarn("[robot_monitor] Exception occurred : "+str(e))
+            pass
+            #rospy.logwarn("[point_at_srv] Exception occurred : " + str(e))
 
     def publish_perspectives(self):
         objects_seen = {}
@@ -230,15 +222,13 @@ class PerspectiveFilter(object):
             for node in nodes_seen:
                 if agent_id in previously_visible_nodes:
                     if node not in previously_visible_nodes[agent_id]:
-                        #self.start_see_situation(agent.name, node.name)
-                        self.start_visible_situation(node.name, agent.name)
+                        self.start_n2_situation(self.source.timeline, "isVisibleBy", node.name, agent.name)
 
         for agent_id, nodes_previously_seen in previously_visible_nodes.items():
             agent = self.source.scene.nodes[agent_id]
             for node in nodes_previously_seen:
                 if node not in self.visible_nodes[agent_id]:
-                    #self.end_situation("see("+agent.name+","+node.name+")")
-                    self.end_situation("visible("+node.name+","+agent.name+")")
+                    self.end_n2_situation(self.source.timeline, "isVisibleBy", node.name, agent.name)
 
     def run(self):
         """
