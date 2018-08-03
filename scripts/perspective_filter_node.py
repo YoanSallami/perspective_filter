@@ -11,7 +11,6 @@ from underworlds.helpers.geometry import *
 from std_msgs.msg import String, Header
 from geometry_msgs.msg import Pose, PoseStamped
 from perspectives_msgs.msg import Perspective, PerspectiveArray, PerspectiveArrayStamped, Agent, Object
-from perspective_filter.srv import AddAgent, RemoveAgent
 from underworlds.tools.visibility import VisibilityMonitor
 from underworlds.types import *
 
@@ -64,9 +63,6 @@ class PerspectiveFilter(object):
         self.ros_publishers = {
             "perspectives": rospy.Publisher("perspective_filter/agent_perspectives", PerspectiveArrayStamped, queue_size=10)}
         # The ROS services
-        self.ros_services = {
-            "add_agent": rospy.Service("perspective_filter/add_agent", AddAgent, self.handle_add_agent),
-            "remove_agent": rospy.Service("perspective_filter/remove_agent", RemoveAgent, self.handle_remove_agent)}
 
         self.log_pub = {"isVisibleBy": rospy.Publisher("predicates_log/visibleby", String, queue_size=5)}
 

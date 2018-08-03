@@ -1,5 +1,0 @@
-#
-string agent_name # the name of the agent
-string tom_lvl # "1" or "2" enables the corresponding level of ToM computation, "0" manage only the visibilities
----
-bool success
